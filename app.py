@@ -8,13 +8,13 @@ import networkx as nx
 from wordcloud import WordCloud
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
-import spacy
 from nltk.sentiment import SentimentIntensityAnalyzer
 from nltk import Text
 from nltk.util import ngrams
 import re
 import base64
 import nltk
+from transformers import pipeline   # NEW
 
 # ---- NLTK Downloads ----
 nltk.download('punkt')
@@ -39,32 +39,21 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---- Initialize NLP Tools ----
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    from spacy.cli import download
-    download("en_core_web_sm", silent=True)  # silent prevents Streamlit log spam
-    nlp = spacy.load("en_core_web_sm")
-
 sia = SentimentIntensityAnalyzer()
+ner_pipeline = pipeline("ner", model="dslim/bert-base-NER", aggregation_strategy="simple")  # REPLACED spacy
 
 # ---- App State ----
 for key in ['data','processed_text','vectorizer','doc_term_matrix','lda_model','knowledge_graph',
             'word_sentiment','removed_words','removed_ngrams']:
-    if key not in st.session_state:
-        st.session_state[key] = None
-if 'removed_words' not in st.session_state:
-    st.session_state.removed_words = []
-if 'removed_ngrams' not in st.session_state:
-    st.session_state.removed_ngrams = []
+    if key not in st.session_state: st.session_state[key] = None
+if 'removed_words' not in st.session_state: st.session_state.removed_words = []
+if 'removed_ngrams' not in st.session_state: st.session_state.removed_ngrams = []
 
 # ---- Tabs ----
-tabs = st.tabs([
-    "Upload Data", "Text Cleaning & Preview", "Knowledge Graph",
-    "WordCloud & Ngrams", "Sentiment Analysis",
-    "Topic Modeling", "Entity Recognition",
-    "Concordance Analysis", "Download Results"
-])
+tabs = st.tabs(["Upload Data", "Text Cleaning & Preview", "Knowledge Graph",
+                "WordCloud & Ngrams", "Sentiment Analysis",
+                "Topic Modeling", "Entity Recognition",
+                "Concordance Analysis", "Download Results"])
 
 # ==========================
 # TAB 1: Upload Data
@@ -92,12 +81,10 @@ with tabs[1]:
     if st.session_state.data is not None:
         st.header("Text Cleaning and Preview")
         text_column = st.selectbox("Select Text Column", st.session_state.data.columns)
-
         def clean_text(text):
             text = str(text).lower()
             text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
             return text
-
         st.session_state.processed_text = st.session_state.data[text_column].apply(clean_text)
         st.dataframe(st.session_state.processed_text.to_frame().head())
 
@@ -117,11 +104,7 @@ with tabs[2]:
         G = nx.relabel_nodes(G, mapping)
         st.session_state.knowledge_graph = G
 
-        word_sentiment = {
-            w: np.mean([sia.polarity_scores(txt)['compound']
-                        for txt in st.session_state.processed_text if w in txt])
-            for w in words
-        }
+        word_sentiment = {w: np.mean([sia.polarity_scores(txt)['compound'] for txt in st.session_state.processed_text if w in txt]) for w in words}
         
         pos = nx.spring_layout(G, seed=42)
         edge_x, edge_y = [], []
@@ -131,10 +114,8 @@ with tabs[2]:
             edge_x += [x0, x1, None]
             edge_y += [y0, y1, None]
 
-        edge_trace = go.Scatter(
-            x=edge_x, y=edge_y, line=dict(width=0.5, color='#888'),
-            hoverinfo='none', mode='lines'
-        )
+        edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.5, color='#888'),
+                                hoverinfo='none', mode='lines')
 
         node_x, node_y, node_text, node_color = [], [], [], []
         for node in G.nodes():
@@ -150,11 +131,8 @@ with tabs[2]:
             hoverinfo='text',
             text=list(G.nodes()),
             textposition='top center',
-            marker=dict(
-                showscale=True, colorscale='RdYlGn',
-                color=node_color, size=20,
-                colorbar=dict(title='Sentiment Score')
-            )
+            marker=dict(showscale=True, colorscale='RdYlGn', color=node_color, size=20,
+                        colorbar=dict(title='Sentiment Score'))
         )
 
         fig = go.Figure(data=[edge_trace, node_trace],
@@ -171,13 +149,11 @@ with tabs[3]:
         all_text = ' '.join(st.session_state.processed_text.tolist())
 
         # --- Interactive Word Removal ---
-        removed_words_input = st.text_input("Remove words (comma-separated)",
-                                            ','.join(st.session_state.removed_words))
+        removed_words_input = st.text_input("Remove words (comma-separated)", ','.join(st.session_state.removed_words))
         st.session_state.removed_words = [w.strip() for w in removed_words_input.split(',')] if removed_words_input else []
 
         # --- Interactive Ngram Removal ---
-        removed_ngrams_input = st.text_input("Remove Ngrams (comma-separated)",
-                                             ','.join(st.session_state.removed_ngrams))
+        removed_ngrams_input = st.text_input("Remove Ngrams (comma-separated)", ','.join(st.session_state.removed_ngrams))
         st.session_state.removed_ngrams = [w.strip() for w in removed_ngrams_input.split(',')] if removed_ngrams_input else []
 
         # --- Filtered Text ---
@@ -197,14 +173,13 @@ with tabs[3]:
         ngram_list = []
         for txt in st.session_state.processed_text:
             tokens = [t for t in txt.split() if t not in st.session_state.removed_words]
-            ngram_list += [' '.join(gram) for gram in ngrams(tokens,n)
-                           if ' '.join(gram) not in st.session_state.removed_ngrams]
+            ngram_list += [' '.join(gram) for gram in ngrams(tokens,n) if ' '.join(gram) not in st.session_state.removed_ngrams]
 
         # Top N selection
         top_n = st.slider(f"Select top N {ngram_range}s", 5, 50, 20)
         ngram_freq = pd.Series(ngram_list).value_counts().head(top_n)
 
-        # --- Micrograph Table with Plotly Bars ---
+        # --- Micrograph Table with Plotly Bars (interactive) ---
         table_data = []
         for gram, freq in ngram_freq.items():
             words_in_gram = gram.split()
@@ -226,7 +201,7 @@ with tabs[3]:
         st.info("Hover over bars to see exact sentiment score. Removal of words/ngrams updates this chart dynamically.")
 
 # ==========================
-# TAB 5: Sentiment Analysis
+# TAB 5: Micrograph-Enhanced Sentiment Analysis
 # ==========================
 with tabs[4]:
     if st.session_state.processed_text is not None:
@@ -276,16 +251,17 @@ with tabs[5]:
         st.info("Each topic shows the top 10 contributing words.")
 
 # ==========================
-# TAB 7: Entity Recognition
+# TAB 7: Entity Recognition (HuggingFace)
 # ==========================
 with tabs[6]:
     if st.session_state.processed_text is not None:
-        st.header("Entity Recognition")
+        st.header("Entity Recognition (Hugging Face Transformers)")
         entities_list = []
-        for doc in nlp.pipe(st.session_state.processed_text, disable=["tagger","parser"]):
-            entities_list.append([(ent.text, ent.label_) for ent in doc.ents])
+        for txt in st.session_state.processed_text:
+            ents = ner_pipeline(txt)
+            entities_list.append([(e['word'], e['entity_group'], round(e['score'],3)) for e in ents])
         st.write(entities_list)
-        st.info("Named entities extracted using spaCy.")
+        st.info("Named entities extracted using Hugging Face pipeline (dslim/bert-base-NER).")
 
 # ==========================
 # TAB 8: Concordance Analysis
