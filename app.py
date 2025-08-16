@@ -1,10 +1,12 @@
 # CE Text Analytics Pro — Full App (No spaCy) — Optimized + Sentiment-Filtered Graph + Custom Stopwords
 # -----------------------------------------------------------------------------------------------------
-# Feature parity with your original 9 tabs + upgrades:
-# - Faster: sampling, vocab caps, caching, batched HF NER, doc truncation, sparse ops.
+# Feature parity with your original 9 sections + upgrades:
+# - Faster: sampling, vocab caps, caching, batched HF NER, row truncation, sparse ops.
 # - Custom stopwords upload (TXT/CSV), merged into vectorization & cleaning.
-# - Network graph sentiment filters (Positive/Neutral/Negative) + pill-style tables of terms & neighbors.
-# - All original visuals and analytics preserved.
+# - Network graph sentiment filters (Positive/Neutral/Negative/All)
+#   + pill-color chips and a table (words, sentiment, degree, neighbors).
+# - Consistent section “What you can uncover” guidance box.
+# - All visuals preserved (WordCloud, N-grams, Sentiment Micrograph, LDA, NER, Concordance, Downloads).
 
 import streamlit as st
 import pandas as pd
@@ -38,15 +40,13 @@ nltk.download("punkt", quiet=True)
 nltk.download("vader_lexicon", quiet=True)
 
 # -----------------------------
-# CSS: Left nav pill style + chips + buttons
+# CSS: Left nav pill style + chips + buttons + section info box
 # -----------------------------
 st.markdown(
     """
     <style>
     /* Sidebar radio -> pill style */
-    [data-testid="stSidebar"] .stRadio > div {
-        gap: 8px !important;
-    }
+    [data-testid="stSidebar"] .stRadio > div { gap: 8px !important; }
     [data-testid="stSidebar"] .stRadio label {
         padding: 6px 14px !important;
         border-radius: 999px !important;
@@ -76,7 +76,7 @@ st.markdown(
     h2, h3 { color: #0F172A; }
     .small-muted { color: #64748B; font-size: 0.9rem; }
 
-    /* Pills for sentiment tables */
+    /* Pills for sentiment chips */
     .chip {
         display: inline-block;
         padding: 6px 12px;
@@ -92,6 +92,24 @@ st.markdown(
     .chip.pos { background:#ECFDF5; color:#065F46; border-color:#A7F3D0; }
     .chip.neu { background:#F1F5F9; color:#0F172A; border-color:#CBD5E1; }
     .chip.neg { background:#FEF2F2; color:#7F1D1D; border-color:#FECACA; }
+
+    /* Section info box */
+    .section-note {
+        border: 1px solid #E5E7EB;
+        background: #F9FAFB;
+        border-radius: 12px;
+        padding: 12px 16px;
+        margin: 8px 0 16px 0;
+        color:#0F172A;
+    }
+    .section-note h4 {
+        margin: 0 0 8px 0;
+        font-size: 1rem;
+        color:#111827;
+    }
+    .section-note ul { margin: 0 0 0 18px; padding: 0; }
+    .section-note li { margin-bottom: 4px; }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -116,6 +134,15 @@ sia = SentimentIntensityAnalyzer()
 # -----------------------------
 # Helpers
 # -----------------------------
+def render_note(title: str, points: list[str]):
+    items = "".join([f"<li>{p}</li>" for p in points])
+    st.markdown(f"""
+    <div class="section-note">
+      <h4>{title}</h4>
+      <ul>{items}</ul>
+    </div>
+    """, unsafe_allow_html=True)
+
 def clean_text(s: str) -> str:
     s = str(s)
     s = s.lower()
@@ -127,7 +154,7 @@ def ensure_text_series(df: pd.DataFrame, col: str) -> pd.Series:
     return df[col].fillna("").astype(str)
 
 def load_stopwords_from_upload(stop_file) -> set:
-    """Accepts TXT or CSV. TXT = one per line; CSV = first column tokens."""
+    """Accepts TXT or CSV. TXT = one per line; CSV = all cells as tokens."""
     if stop_file is None:
         return set()
     name = stop_file.name.lower()
@@ -138,7 +165,6 @@ def load_stopwords_from_upload(stop_file) -> set:
             return set(toks)
         elif name.endswith(".csv"):
             df = pd.read_csv(stop_file)
-            # take all cells flattened as tokens
             vals = []
             for col in df.columns:
                 vals.extend([str(v).strip() for v in df[col].dropna().tolist()])
@@ -154,7 +180,6 @@ def top_words_from_topic(vectorizer: CountVectorizer, topic_row: np.ndarray, top
     return [vocab[i] for i in idxs]
 
 def sentiment_class(compound: float) -> str:
-    # Standard VADER thresholds
     if compound >= 0.05: return "positive"
     if compound <= -0.05: return "negative"
     return "neutral"
@@ -192,23 +217,32 @@ SECTIONS = [
 with st.sidebar:
     st.title("CE Text Analytics Pro")
     chosen = st.radio("Navigation", SECTIONS, index=0, label_visibility="collapsed")
-    st.markdown('<p class="small-muted">Left nav styled as pills • Faster mode options below</p>', unsafe_allow_html=True)
+    st.markdown('<p class="small-muted">Left nav styled as pills • Faster mode controls below</p>', unsafe_allow_html=True)
 
     # Global speed controls
     st.markdown("### ⚡ Performance")
     sample_rows = st.slider("Max rows to analyze", 50, 5000, 500, step=50,
-                            help="Applies to most heavy steps (vectorization, NER, etc.)")
+                            help="Applies to heavy steps (vectorization, NER, etc.)")
     max_vocab = st.slider("Max vocabulary size", 300, 5000, 1500, step=100,
                           help="Caps CountVectorizer features to speed up co-occurrence & LDA")
     truncate_chars = st.slider("Truncate each row to N characters", 200, 3000, 800, step=100,
-                               help="Speed up transformers & vectorization by truncating long rows")
-    st.caption("You can increase these later if you need deeper analysis.")
+                               help="Speeds up transformers & vectorization by truncating long rows")
+    st.caption("Increase these later if you need deeper analysis.")
 
 # ==========================
 # SECTION 1: Upload Data
 # ==========================
 if chosen == "📂 Upload Data":
-    st.header("📂 Upload Your Review/Transcription Files")
+    st.header("📂 Upload Your Files")
+    render_note(
+        "What you can uncover here",
+        [
+            "Load CSV/XLSX/TXT and optional custom stopwords (TXT/CSV).",
+            "Stopwords are merged into all downstream analyses.",
+            "Preview the first rows to confirm the right text column exists."
+        ]
+    )
+
     uploaded_file = st.file_uploader("Upload CSV, XLSX, or TXT file", type=['csv', 'xlsx', 'txt'])
     stop_file = st.file_uploader("Optional: Upload custom stopwords (TXT/CSV)", type=['txt', 'csv'])
 
@@ -243,6 +277,15 @@ if ss.data is None:
 # ==========================
 if chosen == "🧹 Text Processing":
     st.header("🧹 Text Cleaning & Preview + Custom Stopwords")
+    render_note(
+        "What you can uncover here",
+        [
+            "Normalize text (lowercasing, punctuation removal) and preview results.",
+            "Apply sampling & truncation (from sidebar) for speed.",
+            "Verify custom stopwords that will be removed downstream."
+        ]
+    )
+
     text_column = st.selectbox("Select Text Column", ss.data.columns, index=0)
     raw_series = ensure_text_series(ss.data, text_column)
 
@@ -271,7 +314,6 @@ if ss.processed_text is None:
 @st.cache_data(show_spinner=True)
 def compute_vectorization_and_sentiment(texts: pd.Series, max_features: int, custom_stops: set):
     """Returns vectorizer, X (sparse), vocab, co_occurrence (numpy), word_sentiment(dict), doc_sentiments(list), word_class(dict)."""
-    # Merge scikit stopwords with custom
     vectorizer = CountVectorizer(stop_words="english", max_features=max_features)
     X = vectorizer.fit_transform(texts.tolist())
     vocab = vectorizer.get_feature_names_out()
@@ -288,7 +330,6 @@ def compute_vectorization_and_sentiment(texts: pd.Series, max_features: int, cus
     word_sent = {}
     word_cls = {}
     for i, w in enumerate(vocab):
-        # X[:, i] presence vector
         col = X[:, i].toarray().ravel()
         where = np.where(col > 0)[0]
         if len(where):
@@ -303,7 +344,15 @@ def compute_vectorization_and_sentiment(texts: pd.Series, max_features: int, cus
 # SECTION 3: Knowledge Graph
 # ==========================
 if chosen == "🌐 Knowledge Graph":
-    st.header("🌐 Sentiment-Filtered Word Co-occurrence Network + Pill Tables")
+    st.header("🌐 Sentiment-Filtered Word Co-occurrence Network")
+    render_note(
+        "What you can uncover here",
+        [
+            "Explore how words co-occur, filtered by sentiment (Positive / Neutral / Negative / All).",
+            "Hover nodes to view word-level sentiment (VADER).",
+            "Review pill-colored lists and a table of words with top neighbors by degree."
+        ]
+    )
 
     with st.spinner("Vectorizing and computing co-occurrence..."):
         vectorizer, X, vocab, co_occurrence, word_sentiment, doc_scores, word_class = compute_vectorization_and_sentiment(
@@ -331,8 +380,8 @@ if chosen == "🌐 Knowledge Graph":
 
     if len(selected_words) < 2:
         st.warning("Not enough words for the selected sentiment to render a graph.")
-        # Still show pill tables for awareness
-        st.markdown("#### Related Words & Phrases (pills)")
+        # Still show pills
+        st.markdown("#### Words (pills)")
         st.markdown("<div>" + "".join(
             [f'<span class="chip {"pos" if word_class[w]=="positive" else "neg" if word_class[w]=="negative" else "neu"}">{w} · {word_sentiment[w]:+.2f}</span>'
              for w in selected_words]) + "</div>", unsafe_allow_html=True)
@@ -343,7 +392,7 @@ if chosen == "🌐 Knowledge Graph":
     idx = [word_index[w] for w in selected_words]
     co_sub = co_occurrence[np.ix_(idx, idx)]
 
-    # Build graph from filtered adjacency
+    # Build graph from filtered adjacency (use from_numpy_array, not from_numpy_matrix)
     G = nx.from_numpy_array(co_sub)
     mapping = dict(zip(range(len(selected_words)), selected_words))
     G = nx.relabel_nodes(G, mapping)
@@ -395,17 +444,21 @@ if chosen == "🌐 Knowledge Graph":
     fig = go.Figure(
         data=[edge_trace, node_trace],
         layout=go.Layout(
-            showlegend=False, hovermode="closest",
-            margin=dict(l=10, r=10, t=10, b=10),
-            title=f"Co-occurrence Network ({sentiment_choice.title()})"
+            showlegend=False,
+            hovermode="closest",
+            margin=dict(l=10, r=10, t=60, b=10),  # extra top margin
+            title={
+                "text": f"Co-occurrence Network • {sentiment_choice.title()}",
+                "x": 0.5, "y": 0.98,
+                "xanchor": "center", "yanchor": "top"
+            }
         )
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Pill-style "tables": words and top neighbors
-    st.markdown("#### Related Words & Phrases (pills)")
-    # Rank nodes by absolute sentiment within this subgraph
-    ranked = sorted(list(G.nodes()), key=lambda w: abs(word_sentiment.get(w, 0)), reverse=True)[:50]
+    # Pill chips of words (ranked by |sentiment|)
+    st.markdown("#### Words (pills)")
+    ranked = sorted(list(G.nodes()), key=lambda w: abs(word_sentiment.get(w, 0)), reverse=True)[:100]
     chip_html = []
     for w in ranked:
         scls = word_class.get(w, "neutral")
@@ -413,22 +466,38 @@ if chosen == "🌐 Knowledge Graph":
         chip_html.append(f'<span class="chip {cls}">{w} · {word_sentiment.get(w,0):+.2f}</span>')
     st.markdown("<div>" + "".join(chip_html) + "</div>", unsafe_allow_html=True)
 
-    # Neighbor pills per top seed words
-    st.markdown("#### Top Neighbors by Degree (pills)")
-    neighbor_html = []
-    degs = sorted(G.degree, key=lambda x: x[1], reverse=True)[:10]
-    for w, _d in degs:
-        neighs = list(G.neighbors(w))[:10]
-        group = [f'<span class="chip {"pos" if word_class.get(w,"neutral")=="positive" else "neg" if word_class.get(w,"neutral")=="negative" else "neu"}">{w}</span>']
-        group.extend([f'<span class="chip {"pos" if word_class.get(v,"neutral")=="positive" else "neg" if word_class.get(v,"neutral")=="negative" else "neu"}">{v}</span>' for v in neighs])
-        neighbor_html.append("<div style='margin-bottom:6px;'>" + " ".join(group) + "</div>")
-    st.markdown("\n".join(neighbor_html), unsafe_allow_html=True)
+    # Table: words, sentiment, degree, top neighbors
+    st.markdown("#### Words & Top Neighbors (table)")
+    deg_sorted = sorted(G.degree, key=lambda x: x[1], reverse=True)
+    rows = []
+    for w, d in deg_sorted:
+        neighs = list(G.neighbors(w))
+        # sort neighbors by degree of neighbor desc, then by co-occurrence weight
+        neighs_sorted = sorted(neighs, key=lambda n: G.degree[n], reverse=True)[:8]
+        rows.append({
+            "word": w,
+            "sentiment": word_sentiment.get(w, 0.0),
+            "sentiment_class": word_class.get(w, "neutral"),
+            "degree": int(d),
+            "top_neighbors": ", ".join(neighs_sorted)
+        })
+    table_df = pd.DataFrame(rows)
+    # show a colored sentiment column as text (positive/neutral/negative)
+    st.dataframe(table_df, use_container_width=True)
 
 # ==========================
 # SECTION 4: WordCloud & Ngrams
 # ==========================
 if chosen == "☁ WordCloud & Ngrams":
     st.header("☁ Interactive WordCloud & N-gram Analysis")
+    render_note(
+        "What you can uncover here",
+        [
+            "Spot dominant words and frequent phrases.",
+            "Remove noisy words or n-grams interactively (plus your custom stopwords).",
+            "Check per-phrase VADER sentiment in the bar chart tooltips."
+        ]
+    )
 
     all_text = " ".join(ss.processed_text.tolist())
 
@@ -447,19 +516,16 @@ if chosen == "☁ WordCloud & Ngrams":
         )
         ss.removed_ngrams = [w.strip() for w in removed_ngrams_input.split(",") if w.strip()] if removed_ngrams_input else []
 
-    # Merge custom stopwords into removal set for the cloud
     removal_set = set(ss.removed_words) | set(ss.custom_stopwords)
     filtered_words = [w for w in all_text.split() if w not in removal_set]
     filtered_text = " ".join(filtered_words) if filtered_words else "empty"
 
-    # WordCloud (fast)
     wc = WordCloud(width=1000, height=400, background_color="white").generate(filtered_text)
     fig_wc, ax_wc = plt.subplots(figsize=(12, 5))
     ax_wc.imshow(wc, interpolation="bilinear")
     ax_wc.axis("off")
     st.pyplot(fig_wc)
 
-    # N-grams (fast)
     ngram_choice = st.selectbox("Select N-gram type", ["Unigram", "Bigram", "Trigram"], index=0)
     n_val = {"Unigram": 1, "Bigram": 2, "Trigram": 3}[ngram_choice]
 
@@ -502,8 +568,15 @@ if chosen == "☁ WordCloud & Ngrams":
 # ==========================
 if chosen == "😊 Sentiment Analysis":
     st.header("😊 Sentiment Analysis with Interactive Micrographs")
+    render_note(
+        "What you can uncover here",
+        [
+            "Identify the words carrying strongest positive/negative sentiment (VADER).",
+            "Optionally run sampled transformer sentiment for sentence-level validation.",
+            "Use sidebar sampling/truncation to keep runs fast."
+        ]
+    )
 
-    # Word-level VADER micrograph
     removal_set = set(ss.removed_words) | set(ss.custom_stopwords)
     word_scores = {}
     for txt in ss.processed_text:
@@ -533,18 +606,18 @@ if chosen == "😊 Sentiment Analysis":
     st.plotly_chart(fig_micro, use_container_width=True)
     st.caption("Word-level VADER micrograph (fast).")
 
-    # Optional: Transformers sentiment (batched) on a sample — faster + truncated
-    with st.expander("Sentence-level Sentiment via Transformers (sampled & truncated)"):
+    # Optional: Transformers sentiment (batched) on a sample — truncated proactively
+    with st.expander("Sentence-level Sentiment via Transformers (sampled)"):
         limit = st.slider("Max rows to score", min_value=20, max_value=500, value=min(100, len(ss.processed_text)), step=20)
         samples = ss.processed_text.head(limit).apply(lambda s: s[:truncate_chars]).tolist()
         if st.button("Run HF Sentiment on Sample"):
             with st.spinner("Scoring..."):
-                results = hf_sentiment(samples, batch_size=16, truncation=True)
+                results = hf_sentiment(samples, batch_size=16)  # no truncation kwarg, we truncated text already
             sdf = pd.DataFrame(results)
             sdf["text"] = samples
             c1, c2 = st.columns([2, 3])
             with c1:
-                st.dataframe(sdf)
+                st.dataframe(sdf, use_container_width=True)
             with c2:
                 fig = px.histogram(sdf, x="label", color="label", title="HF Sentiment Distribution")
                 st.plotly_chart(fig, use_container_width=True)
@@ -553,12 +626,19 @@ if chosen == "😊 Sentiment Analysis":
 # SECTION 6: Topic Modeling
 # ==========================
 if chosen == "🧠 Topic Modeling":
-    st.header("🧠 Topic Modeling with LDA (scikit-learn) — Optimized")
+    st.header("🧠 Topic Modeling with LDA (scikit-learn)")
+    render_note(
+        "What you can uncover here",
+        [
+            "Discover latent themes across documents.",
+            "Adjust topic count and top terms; vocabulary is capped for speed.",
+            "Results are driven by the processed, stopword-filtered text."
+        ]
+    )
 
     n_topics = st.slider("Number of topics", 2, 10, 5, step=1)
     top_k = st.slider("Top words per topic", 5, 20, 10, step=1)
 
-    # Vectorize with cap (already cached in KG step but re-vectorize here for independent control)
     vectorizer = CountVectorizer(stop_words="english", max_features=max_vocab)
     dtm = vectorizer.fit_transform(ss.processed_text.tolist())
     if dtm.shape[0] == 0 or dtm.shape[1] == 0:
@@ -582,18 +662,26 @@ if chosen == "🧠 Topic Modeling":
 # SECTION 7: Entity Recognition (Transformers)
 # ==========================
 if chosen == "🔍 Entity Recognition":
-    st.header("🔍 Entity Recognition (Hugging Face Transformers) — Batched & Truncated")
+    st.header("🔍 Entity Recognition (Hugging Face Transformers)")
+    render_note(
+        "What you can uncover here",
+        [
+            "Extract entities like persons, organizations, locations from sampled text.",
+            "Batched inference for speed; long rows are truncated beforehand.",
+            "Inspect both entity types and their confidence scores."
+        ]
+    )
 
     limit = st.slider("Analyze first N rows", 10, 500, min(100, len(ss.processed_text)), step=10)
     texts = ss.processed_text.head(limit).apply(lambda s: s[:truncate_chars]).tolist()
 
     rows = []
     with st.spinner("Running NER in batches..."):
-        # batch the texts for speed
         batch_size = 16
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i+batch_size]
-            ents_batch = hf_ner(batch, batch_size=batch_size, truncation=True)
+            # IMPORTANT: do not pass truncation kwarg (causes TypeError). We truncated strings ourselves.
+            ents_batch = hf_ner(batch, batch_size=batch_size)
             for idx, ents in enumerate(ents_batch):
                 row_idx = i + idx
                 snippet = texts[row_idx][:120] + ("..." if len(texts[row_idx]) > 120 else "")
@@ -623,9 +711,16 @@ if chosen == "🔍 Entity Recognition":
 # ==========================
 if chosen == "🔎 Concordance Analysis":
     st.header("🔎 Concordance Analysis")
+    render_note(
+        "What you can uncover here",
+        [
+            "Search for a keyword and see its surrounding context windows.",
+            "Filter respects custom stopwords and manual removals.",
+            "Limit the number of hits to stay quick and focused."
+        ]
+    )
 
     text_tokens = []
-    # honor removals & custom stops to stay responsive
     removal_set = set(ss.removed_words) | set(ss.custom_stopwords)
     for txt in ss.processed_text:
         text_tokens.extend([t for t in txt.split() if t not in removal_set])
@@ -658,6 +753,14 @@ if chosen == "🔎 Concordance Analysis":
 # ==========================
 if chosen == "⬇️ Download Results":
     st.header("⬇️ Download Analysis Results")
+    render_note(
+        "What you can uncover here",
+        [
+            "Export original + processed text to CSV.",
+            "Charts can be saved as PNG via right-click.",
+            "Combine with filters first to download a focused slice."
+        ]
+    )
     if ss.data is not None:
         out_df = ss.data.copy()
         if ss.processed_text is not None:
