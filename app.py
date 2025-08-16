@@ -14,7 +14,7 @@ from nltk.util import ngrams
 import re
 import base64
 import nltk
-from transformers import pipeline   # NEW
+from transformers import pipeline   # Hugging Face
 
 # ---- NLTK Downloads ----
 nltk.download('punkt')
@@ -23,6 +23,21 @@ nltk.download('vader_lexicon')
 # ---- CSS Styling ----
 st.markdown("""
 <style>
+/* Pill-style tabs */
+.stTabs [role="tablist"] {
+    gap: 10px;
+}
+.stTabs [role="tab"] {
+    border-radius: 20px;
+    padding: 6px 16px;
+    background-color: #f0f2f6;
+    color: #4CAF50;
+    font-weight: bold;
+}
+.stTabs [role="tab"][aria-selected="true"] {
+    background-color: #4CAF50;
+    color: white;
+}
 .stButton>button {
     border-radius: 50px;
     padding: 0.5em 1.5em;
@@ -31,16 +46,12 @@ st.markdown("""
     font-weight: bold;
     margin: 5px;
 }
-.stTabs [role="tab"] {
-    font-weight: bold;
-    color: #4CAF50;
-}
 </style>
 """, unsafe_allow_html=True)
 
 # ---- Initialize NLP Tools ----
 sia = SentimentIntensityAnalyzer()
-ner_pipeline = pipeline("ner", model="dslim/bert-base-NER", aggregation_strategy="simple")  # REPLACED spacy
+ner_pipeline = pipeline("ner", model="dslim/bert-base-NER", aggregation_strategy="simple")
 
 # ---- App State ----
 for key in ['data','processed_text','vectorizer','doc_term_matrix','lda_model','knowledge_graph',
@@ -94,51 +105,60 @@ with tabs[1]:
 with tabs[2]:
     if st.session_state.processed_text is not None:
         st.header("Interactive Knowledge Graph with Sentiment Tooltips")
+
         vectorizer = CountVectorizer(stop_words='english')
         X = vectorizer.fit_transform(st.session_state.processed_text)
-        words = vectorizer.get_feature_names_out()
-        co_occurrence = (X.T @ X).toarray()
-        np.fill_diagonal(co_occurrence, 0)
-        G = nx.from_numpy_matrix(co_occurrence)
-        mapping = dict(zip(range(len(words)), words))
-        G = nx.relabel_nodes(G, mapping)
-        st.session_state.knowledge_graph = G
 
-        word_sentiment = {w: np.mean([sia.polarity_scores(txt)['compound'] for txt in st.session_state.processed_text if w in txt]) for w in words}
-        
-        pos = nx.spring_layout(G, seed=42)
-        edge_x, edge_y = [], []
-        for edge in G.edges():
-            x0, y0 = pos[edge[0]]
-            x1, y1 = pos[edge[1]]
-            edge_x += [x0, x1, None]
-            edge_y += [y0, y1, None]
+        if X.shape[1] > 1:  # Ensure at least 2 unique words
+            words = vectorizer.get_feature_names_out()
+            co_occurrence = (X.T @ X).toarray()
+            np.fill_diagonal(co_occurrence, 0)
 
-        edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.5, color='#888'),
-                                hoverinfo='none', mode='lines')
+            G = nx.from_numpy_matrix(co_occurrence)
+            mapping = dict(zip(range(len(words)), words))
+            G = nx.relabel_nodes(G, mapping)
+            st.session_state.knowledge_graph = G
 
-        node_x, node_y, node_text, node_color = [], [], [], []
-        for node in G.nodes():
-            x, y = pos[node]
-            node_x.append(x)
-            node_y.append(y)
-            node_text.append(f"{node}<br>Sentiment: {word_sentiment[node]:.2f}")
-            node_color.append(word_sentiment[node])
+            word_sentiment = {
+                w: np.mean([sia.polarity_scores(txt)['compound'] for txt in st.session_state.processed_text if w in txt])
+                for w in words
+            }
+            
+            pos = nx.spring_layout(G, seed=42)
+            edge_x, edge_y = [], []
+            for edge in G.edges():
+                x0, y0 = pos[edge[0]]
+                x1, y1 = pos[edge[1]]
+                edge_x += [x0, x1, None]
+                edge_y += [y0, y1, None]
 
-        node_trace = go.Scatter(
-            x=node_x, y=node_y,
-            mode='markers+text',
-            hoverinfo='text',
-            text=list(G.nodes()),
-            textposition='top center',
-            marker=dict(showscale=True, colorscale='RdYlGn', color=node_color, size=20,
-                        colorbar=dict(title='Sentiment Score'))
-        )
+            edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.5, color='#888'),
+                                    hoverinfo='none', mode='lines')
 
-        fig = go.Figure(data=[edge_trace, node_trace],
-                        layout=go.Layout(showlegend=False, hovermode='closest'))
-        st.plotly_chart(fig, use_container_width=True)
-        st.info("Hover nodes to see average sentiment for that word.")
+            node_x, node_y, node_text, node_color = [], [], [], []
+            for node in G.nodes():
+                x, y = pos[node]
+                node_x.append(x)
+                node_y.append(y)
+                node_text.append(f"{node}<br>Sentiment: {word_sentiment[node]:.2f}")
+                node_color.append(word_sentiment[node])
+
+            node_trace = go.Scatter(
+                x=node_x, y=node_y,
+                mode='markers+text',
+                hoverinfo='text',
+                text=list(G.nodes()),
+                textposition='top center',
+                marker=dict(showscale=True, colorscale='RdYlGn', color=node_color, size=20,
+                            colorbar=dict(title='Sentiment Score'))
+            )
+
+            fig = go.Figure(data=[edge_trace, node_trace],
+                            layout=go.Layout(showlegend=False, hovermode='closest'))
+            st.plotly_chart(fig, use_container_width=True)
+            st.info("Hover nodes to see average sentiment for that word.")
+        else:
+            st.warning("Not enough unique words to build a knowledge graph.")
 
 # ==========================
 # TAB 4: WordCloud & Ngrams
