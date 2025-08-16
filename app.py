@@ -1,4 +1,4 @@
-# enterprise_text_analytics_interactive_tooltips.py
+# streamlit_app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -16,6 +16,7 @@ import re
 import base64
 import nltk
 
+# ---- NLTK Downloads ----
 nltk.download('punkt')
 nltk.download('vader_lexicon')
 
@@ -38,7 +39,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---- Initialize NLP Tools ----
-nlp = spacy.load("en_core_web_sm")
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    from spacy.cli import download
+    download("en_core_web_sm")
+    nlp = spacy.load("en_core_web_sm")
+
 sia = SentimentIntensityAnalyzer()
 
 # ---- App State ----
